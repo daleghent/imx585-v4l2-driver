@@ -8,7 +8,7 @@ VERSION = 0.0.1
 DKMS_SRC_DIR = /usr/src/$(PACKAGE_NAME)-$(VERSION)
 
 %:
-	dh $@ --with dkms
+	dh $@
 
 override_dh_auto_configure:
 	# No configuration needed
@@ -32,9 +32,6 @@ override_dh_auto_install:
 
 	# Create the overlays directory
 	mkdir -p debian/imx585-dkms/boot/overlays
-
-override_dh_dkms:
-	dh_dkms -V $(VERSION)
 
 override_dh_auto_clean:
 	dh_clean
