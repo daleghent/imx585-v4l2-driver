@@ -102,6 +102,22 @@ else
     exit 1
 fi
 
+# Validate debian/source/format has no trailing newline
+if [ "$(tail -c 1 debian/source/format | wc -l)" -eq 0 ]; then
+    echo "✓ debian/source/format has no trailing newline"
+else
+    echo "✗ debian/source/format has trailing newline (will cause build errors)"
+    exit 1
+fi
+
+# Test dpkg-source format validation
+if dpkg-source --before-build . >/dev/null 2>&1; then
+    echo "✓ dpkg-source format validation passed"
+else
+    echo "✗ dpkg-source format validation failed"
+    exit 1
+fi
+
 echo ""
 echo "All validation checks passed!"
 echo ""
