@@ -12,6 +12,26 @@ sudo apt install debhelper dkms device-tree-compiler build-essential
 
 ## Building the Package
 
+### Using the build script (recommended)
+
+From the root of the repository, run:
+
+```bash
+./build-deb.sh
+```
+
+The script will check for dependencies and guide you through the build process.
+
+### Validating the package structure
+
+Before building, you can validate that all required files are present:
+
+```bash
+./validate-package.sh
+```
+
+### Manual build
+
 From the root of the repository, run:
 
 ```bash
