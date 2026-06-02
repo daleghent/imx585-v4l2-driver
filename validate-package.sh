@@ -22,7 +22,6 @@ REQUIRED_FILES=(
     "debian/control"
     "debian/rules"
     "debian/changelog"
-    "debian/compat"
     "debian/copyright"
     "debian/postinst"
     "debian/prerm"
@@ -83,6 +82,14 @@ if grep -q "^Source: imx585-dkms" debian/control && \
 else
     echo "✗ debian/control format is invalid"
     exit 1
+fi
+
+# Ensure debian/compat doesn't exist (deprecated, use debhelper-compat in control)
+if [ -f "debian/compat" ]; then
+    echo "✗ debian/compat exists (deprecated - remove it, use debhelper-compat in debian/control)"
+    exit 1
+else
+    echo "✓ debian/compat does not exist (correct - using debhelper-compat in control)"
 fi
 
 # Validate debian/changelog format
