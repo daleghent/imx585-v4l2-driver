@@ -63,6 +63,7 @@ SOURCE_FILES=(
     "dkms.conf"
     "dkms.postinst"
     "imx585-overlay.dts"
+    "imx585.conf"
 )
 
 for file in "${SOURCE_FILES[@]}"; do

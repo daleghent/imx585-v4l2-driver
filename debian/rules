@@ -33,5 +33,9 @@ override_dh_auto_install:
 	# Create the overlays directory
 	mkdir -p debian/imx585-dkms/boot/overlays
 
+	# Install modules-load.d fragment
+	mkdir -p debian/imx585-dkms/etc/modules-load.d
+	install -m 644 imx585.conf debian/imx585-dkms/etc/modules-load.d/imx585.conf
+
 override_dh_auto_clean:
 	dh_clean

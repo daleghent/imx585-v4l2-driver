@@ -12,6 +12,9 @@ case "$1" in
         # Remove device tree overlay
         rm -f /boot/overlays/imx585.dtbo 2>/dev/null || true
 
+        # Remove modules-load.d fragment
+        rm -f /etc/modules-load.d/imx585.conf 2>/dev/null || true
+
         # Remove DKMS module completely
         dkms remove -m ${PACKAGE_NAME} -v ${VERSION} --all 2>/dev/null || true
 
