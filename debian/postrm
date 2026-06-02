@@ -1,0 +1,23 @@
+#!/bin/sh
+set -e
+
+# Package information
+PACKAGE_NAME=imx585
+VERSION=0.0.1
+
+#DEBHELPER#
+
+case "$1" in
+    purge)
+        # Remove device tree overlay
+        rm -f /boot/overlays/imx585.dtbo 2>/dev/null || true
+
+        # Remove DKMS module completely
+        dkms remove -m ${PACKAGE_NAME} -v ${VERSION} --all 2>/dev/null || true
+
+        # Clean up source directory
+        rm -rf /usr/src/${PACKAGE_NAME}-${VERSION} 2>/dev/null || true
+        ;;
+esac
+
+exit 0

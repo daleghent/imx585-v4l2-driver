@@ -1,0 +1,24 @@
+#!/bin/sh
+set -e
+
+# Package information
+PACKAGE_NAME=imx585
+VERSION=0.0.1
+
+#DEBHELPER#
+
+case "$1" in
+    remove|upgrade|deconfigure)
+        # Use common.postinst if available (it will handle DKMS removal)
+        if [ -f /usr/lib/dkms/common.postinst ]; then
+            /usr/lib/dkms/common.postinst ${PACKAGE_NAME} ${VERSION}
+        fi
+
+        # Remove the module from all kernels
+        if [ "$1" = "remove" ]; then
+            dkms remove -m ${PACKAGE_NAME} -v ${VERSION} --all 2>/dev/null || true
+        fi
+        ;;
+esac
+
+exit 0

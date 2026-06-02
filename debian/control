@@ -1,0 +1,24 @@
+Source: imx585-dkms
+Section: kernel
+Priority: optional
+Maintainer: Dale Ghent <daleg@elemental.org>
+Build-Depends: debhelper-compat (= 13), dkms
+Standards-Version: 4.6.0
+Homepage: https://github.com/daleghent/imx585-v4l2-driver
+Vcs-Git: https://github.com/daleghent/imx585-v4l2-driver.git
+Vcs-Browser: https://github.com/daleghent/imx585-v4l2-driver
+
+Package: imx585-dkms
+Architecture: all
+Depends: ${misc:Depends}, dkms (>= 2.1.0.0), device-tree-compiler
+Recommends: linux-headers
+Description: DKMS driver for Sony IMX585 image sensor
+ This package provides the kernel driver for the Sony IMX585 CMOS
+ image sensor for Raspberry Pi and compatible platforms.
+ .
+ The driver is managed by DKMS and will be automatically rebuilt
+ when new kernel versions are installed.
+ .
+ This driver supports various configurations including 2-lane and
+ 4-lane MIPI CSI-2 modes, monochrome variants, and customizable
+ link frequencies.

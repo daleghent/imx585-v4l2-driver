@@ -1,0 +1,40 @@
+#!/usr/bin/make -f
+
+# Package name and version
+PACKAGE_NAME = imx585
+VERSION = 0.0.1
+
+# Destination directory for DKMS source
+DKMS_SRC_DIR = /usr/src/$(PACKAGE_NAME)-$(VERSION)
+
+%:
+	dh $@ --with dkms
+
+override_dh_auto_configure:
+	# No configuration needed
+
+override_dh_auto_build:
+	# DKMS will build the module
+
+override_dh_auto_test:
+	# No tests to run
+
+override_dh_auto_install:
+	# Create the DKMS source directory
+	mkdir -p debian/imx585-dkms$(DKMS_SRC_DIR)
+
+	# Copy source files to DKMS source directory
+	cp imx585.c debian/imx585-dkms$(DKMS_SRC_DIR)/
+	cp Makefile debian/imx585-dkms$(DKMS_SRC_DIR)/
+	cp dkms.conf debian/imx585-dkms$(DKMS_SRC_DIR)/
+	cp imx585-overlay.dts debian/imx585-dkms$(DKMS_SRC_DIR)/
+	cp dkms.postinst debian/imx585-dkms$(DKMS_SRC_DIR)/
+
+	# Create the overlays directory
+	mkdir -p debian/imx585-dkms/boot/overlays
+
+override_dh_dkms:
+	dh_dkms -V $(VERSION)
+
+override_dh_auto_clean:
+	dh_clean
