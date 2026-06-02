@@ -21,15 +21,56 @@ Before you begin the installation process, please ensure the following prerequis
    
 ## Installation Steps
 
-### Setting Up the Tools
+You can install the IMX585 driver either via a Debian package (recommended) or manually using the setup script.
+
+### Option 1: Install via Debian Package (Recommended)
+
+The Debian package provides automated DKMS integration, making it easier to manage the driver across kernel upgrades.
+
+#### Building the Debian Package
+
+First, install the build dependencies:
+
+```bash
+sudo apt install debhelper dkms device-tree-compiler build-essential
+```
+
+Clone the repository and build the package:
+
+```bash
+git clone https://github.com/will127534/imx585-v4l2-driver.git
+cd imx585-v4l2-driver/
+dpkg-buildpackage -us -uc -b
+```
+
+#### Installing the Package
+
+Install the generated `.deb` file:
+
+```bash
+sudo dpkg -i ../imx585-dkms_0.0.1-1_all.deb
+sudo apt-get install -f  # Fix any dependency issues
+```
+
+The package will automatically:
+- Register the module with DKMS
+- Build and install the kernel module for all installed kernels
+- Compile and install the device tree overlay
+- Rebuild the module automatically when the kernel is upgraded
+
+See [debian/README.md](debian/README.md) for more details.
+
+### Option 2: Manual Installation with setup.sh
+
+#### Setting Up the Tools
 
 First, install the necessary tools (`linux-headers`, `dkms`, and `git`) if you haven't done so:
 
-```bash 
+```bash
 sudo apt install linux-headers dkms git
 ```
 
-### Fetching the Source Code
+#### Fetching the Source Code
 
 Clone the repository to your local machine and navigate to the cloned directory:
 
@@ -38,11 +79,11 @@ git clone https://github.com/will127534/imx585-v4l2-driver.git
 cd imx585-v4l2-driver/
 ```
 
-### Compiling and Installing the Kernel Driver
+#### Compiling and Installing the Kernel Driver
 
 To compile and install the kernel driver, execute the provided installation script:
 
-```bash 
+```bash
 ./setup.sh
 ```
 
