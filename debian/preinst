@@ -1,0 +1,24 @@
+#!/bin/sh
+set -e
+
+# The original prerm left the old module registered during upgrades.
+# Remove it while its source and its DKMS configuration still exist.
+if [ "$1" = upgrade ]; then
+    old_version=${2#*:}
+    old_version=${old_version%-*}
+    src=/usr/src/imx585-$old_version
+    if grep -qsx 'PACKAGE_NAME=imx585-dkms' "$src/dkms.conf"; then
+        if [ -d "/var/lib/dkms/imx585/$old_version" ]; then
+            dkms remove -m imx585 -v "$old_version" --all
+        fi
+        # The original installer also wrote to /boot on newer Pi layouts.
+        if [ -d /boot/firmware/overlays ] &&
+           [ ! /boot/overlays -ef /boot/firmware/overlays ] &&
+           cmp -s "$src/imx585.dtbo" /boot/overlays/imx585.dtbo; then
+            rm -f /boot/overlays/imx585.dtbo
+        fi
+        rm -f "$src/imx585.dtbo"
+    fi
+fi
+
+#DEBHELPER#

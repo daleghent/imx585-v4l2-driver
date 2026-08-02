@@ -1,0 +1,8 @@
+#!/bin/sh
+set -e
+
+#DEBHELPER#
+
+if [ "$1" = configure ]; then
+    sh /usr/share/imx585-dkms/install-overlay.sh /usr/share/imx585-dkms/imx585.dtbo
+fi

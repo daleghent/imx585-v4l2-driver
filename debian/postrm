@@ -1,0 +1,12 @@
+#!/bin/sh
+set -e
+
+if [ "$1" = remove ]; then
+    overlays=/boot/overlays
+    if [ -d /boot/firmware/overlays ]; then
+        overlays=/boot/firmware/overlays
+    fi
+    rm -f "$overlays/imx585.dtbo"
+fi
+
+#DEBHELPER#

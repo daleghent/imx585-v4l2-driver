@@ -13,46 +13,90 @@ Before you begin the installation process, please ensure the following prerequis
 
 - **Kernel version**: You should be running on a Linux kernel version 6.12 or newer. You can verify your kernel version by executing `uname -r` in your terminal.
 
-- **Development tools**: Essential tools such as `gcc`, `dkms`, and `linux-headers` are required for compiling a kernel module. If not already installed, these can be installed using the package manager with the following command:
-  
-   ```bash 
-   sudo apt install linux-headers dkms git
-   ```
-   
+- Install the kernel headers matching the Raspberry Pi kernel you will run. DKMS needs them to compile the module.
+
 ## Installation Steps
 
-### Setting Up the Tools
+You can install the IMX585 driver either via a Debian package (recommended) or manually using the setup script.
 
-First, install the necessary tools (`linux-headers`, `dkms`, and `git`) if you haven't done so:
+### Option 1: Install via Debian Package (Recommended)
 
-```bash 
-sudo apt install linux-headers dkms git
+The Debian package provides automated DKMS integration, making it easier to manage the driver across kernel upgrades.
+
+#### Building the Debian Package
+
+First, install the build dependencies:
+
+```bash
+sudo apt install build-essential debhelper dh-dkms device-tree-compiler
 ```
 
-### Fetching the Source Code
+Clone the repository and build the package:
+
+```bash
+git clone --branch eos/aither https://github.com/daleghent/imx585-v4l2-driver.git
+cd imx585-v4l2-driver/
+./build-deb.sh
+```
+
+#### Installing the Package
+
+Install the generated `.deb` file:
+
+```bash
+version=$(dpkg-parsechangelog -S Version)
+sudo apt install "../imx585-dkms_${version#*:}_all.deb"
+```
+
+The package will automatically:
+- Register the module with DKMS
+- Build and install the kernel module for kernels selected by DKMS with matching headers
+- Install the precompiled device tree overlay
+- Rebuild the module automatically when the kernel is upgraded
+
+See [debian/README.md](debian/README.md) for more details.
+
+### Option 2: Manual Installation with setup.sh
+
+#### Setting Up the Tools
+
+Install the tools for a standalone DKMS installation:
+
+```bash
+sudo apt install dkms dpkg-dev device-tree-compiler git
+```
+
+#### Fetching the Source Code
 
 Clone the repository to your local machine and navigate to the cloned directory:
 
 ```bash
-git clone https://github.com/will127534/imx585-v4l2-driver.git
+git clone --branch eos/aither https://github.com/daleghent/imx585-v4l2-driver.git
 cd imx585-v4l2-driver/
 ```
 
-### Compiling and Installing the Kernel Driver
+#### Compiling and Installing the Kernel Driver
 
 To compile and install the kernel driver, execute the provided installation script:
 
-```bash 
+```bash
 ./setup.sh
 ```
 
+The script installs the new driver for the running kernel. If you previously
+installed a different version manually, check `dkms status -m imx585`. Once
+all kernels you use have the new driver, you can retire the old registration
+with `sudo dkms remove imx585/<old-version> --all`.
+
 ### Updating the Boot Configuration
 
-Edit the boot configuration file using the following command:
+On current Raspberry Pi OS, edit the boot configuration file with:
 
 ```bash
-sudo nano /boot/config.txt
+sudo nano /boot/firmware/config.txt
 ```
+
+On older installations the file is `/boot/config.txt`.
 
 In the opened editor, locate the line containing `camera_auto_detect` and change its value to `0`. Then, add the line `dtoverlay=imx585`. So, it will look like this:
 

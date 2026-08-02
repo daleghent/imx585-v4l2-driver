@@ -10,3 +10,17 @@
 Module.symvers
 modules.order
 .module-common.o
+
+# Debian packaging artifacts
+debian/files
+debian/.debhelper/
+debian/imx585-dkms/
+debian/imx585-dkms.debhelper.log
+debian/imx585-dkms.substvars
+debian/*.log
+debian/debhelper-build-stamp
+*.deb
+*.buildinfo
+*.changes
+debian/imx585.dtbo
+debian/*.debhelper
