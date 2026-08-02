@@ -1,0 +1,42 @@
+#!/bin/sh
+set -e
+
+# Package information
+PACKAGE_NAME=imx585
+VERSION=0.0.1
+
+#DEBHELPER#
+
+case "$1" in
+    configure)
+        # Add the module to DKMS
+        dkms add -m ${PACKAGE_NAME} -v ${VERSION} 2>/dev/null || true
+
+        # Build the module for all installed kernels
+        if [ -f /usr/lib/dkms/common.postinst ]; then
+            /usr/lib/dkms/common.postinst ${PACKAGE_NAME} ${VERSION}
+        else
+            # Fallback for older DKMS versions
+            for KVER in $(ls /lib/modules/); do
+                if [ -d /lib/modules/${KVER}/build ]; then
+                    dkms build -m ${PACKAGE_NAME} -v ${VERSION} -k ${KVER} 2>/dev/null || true
+                    dkms install -m ${PACKAGE_NAME} -v ${VERSION} -k ${KVER} 2>/dev/null || true
+                fi
+            done
+        fi
+
+        # Compile and install device tree overlay
+        if [ -f /usr/src/${PACKAGE_NAME}-${VERSION}/imx585-overlay.dts ]; then
+            cd /usr/src/${PACKAGE_NAME}-${VERSION}
+            dtc -Wno-interrupts_property -Wno-unit_address_vs_reg -@ -I dts -O dtb \
+                -o imx585.dtbo imx585-overlay.dts 2>/dev/null || true
+
+            if [ -f imx585.dtbo ]; then
+                mkdir -p /boot/overlays
+                install -m 644 imx585.dtbo /boot/overlays/
+            fi
+        fi
+        ;;
+esac
+
+exit 0

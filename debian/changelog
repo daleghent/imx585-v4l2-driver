@@ -1,0 +1,14 @@
+imx585-dkms (0.0.1-1) unstable; urgency=medium
+
+  * Initial release of IMX585 DKMS driver package
+  * Support for Sony IMX585 CMOS image sensor
+  * DKMS integration for automatic kernel module rebuilding
+  * Device tree overlay compilation and installation
+  * Support for various sensor configurations:
+    - 2-lane and 4-lane MIPI CSI-2 modes
+    - Monochrome variants
+    - Configurable link frequencies
+    - Sync modes (internal-leader, internal-follower, external)
+    - RAW10 and RAW12 pixel formats
+
+ -- Dale Ghent <daleg@elemental.org>  Mon, 02 Jun 2026 21:23:00 +0000
