@@ -149,6 +149,8 @@
 
 /* Black level control */
 #define IMX585_REG_BLKLEVEL             CCI_REG16_LE(0x30dc)
+/* BLKLEVEL[9:0]: one RAW10 count or four linear RAW12 counts. */
+#define IMX585_BLKLEVEL_MAX             0x3ff
 #define IMX585_BLKLEVEL_DEFAULT         50
 
 
@@ -1432,14 +1434,11 @@ static int imx585_set_ctrl(struct v4l2_ctrl *ctrl)
 		if (ret)
 			dev_err_ratelimited(imx585->clientdev, "VFLIP write failed (%d)\n", ret);
 		break;
-	case V4L2_CID_BRIGHTNESS: {
-		u16 blacklevel = min_t(u32, ctrl->val, 4095);
-
-		ret = cci_write(imx585->regmap, IMX585_REG_BLKLEVEL, blacklevel, NULL);
+	case V4L2_CID_BRIGHTNESS:
+		ret = cci_write(imx585->regmap, IMX585_REG_BLKLEVEL, ctrl->val, NULL);
 		if (ret)
 			dev_err_ratelimited(imx585->clientdev, "BLKLEVEL write failed (%d)\n", ret);
 		break;
-	}
 	case V4L2_CID_IMX585_SHR:
 		dev_info(imx585->clientdev, "SHR=%u\n", ctrl->val);
 		if (ctrl->val == 0)
@@ -1693,7 +1692,7 @@ static int imx585_init_controls(struct imx585 *imx585)
 	imx585->hblank = v4l2_ctrl_new_std(hdl, &imx585_ctrl_ops,
 					   V4L2_CID_HBLANK, 0, 0xFFFF, 1, 0);
 	imx585->blacklevel = v4l2_ctrl_new_std(hdl, &imx585_ctrl_ops,
-					       V4L2_CID_BRIGHTNESS, 0, 0xFFFF, 1,
+					       V4L2_CID_BRIGHTNESS, 0, IMX585_BLKLEVEL_MAX, 1,
 					       IMX585_BLKLEVEL_DEFAULT);
 
 	imx585->exposure = v4l2_ctrl_new_std(hdl, &imx585_ctrl_ops,
