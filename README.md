@@ -109,6 +109,20 @@ After making these changes, save the file and exit the editor.
 
 Remember to reboot your system for the changes to take effect.
 
+## Register settings outside the Sony worksheet
+
+The IMX585 Standard Register Setting Ver. 1.0 worksheet omits the addresses below. The driver uses them for existing module and Raspberry Pi behavior. The commit IDs identify where each setting entered this driver.
+
+| Address | Driver use | Source in driver history |
+| --- | --- | --- |
+| `0x3019` | Select monochrome or color binning | `f3a37a0`, monochrome binning correction |
+| `0x303A` | Disable embedded-data output | `3a31573`, Raspberry Pi RAW16 capture |
+| `0x30CE` | Select external XVS synchronization | `fe777d7`, external sync support |
+| `0x30E0`, `0x30E2`, `0x5300` | Enable the test-pattern output and clock, and select a pattern | `2553a87`, test-pattern support adapted from the IMX283 driver |
+| `0x3458` | Disable digital clamp at stream start | `8245dd1`, imported sensor setup |
+
+These settings have no per-address IMX585 vendor reference in the repository. For black-level calibration, record that the driver disables digital clamp independently of the programmable `BLKLEVEL` offset.
+
 ## dtoverlay options
 
 ### cam0
