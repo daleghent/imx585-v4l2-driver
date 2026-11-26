@@ -164,15 +164,10 @@
 #define IMX585_ANA_GAIN_MIN_NORMAL      0
 #define IMX585_ANA_GAIN_MIN_HCG         34
 #define IMX585_ANA_GAIN_MAX_NORMAL      240
-/*
- * AppNote page 5 "List of Setting Register": GAIN range is 00h..50h
- * (0..80 decimal) — covers all modes including Clear HDR. The §5 page
- * 18 sum constraint `9.6dB ≤ GAIN + EXP_GAIN ≤ 29.1dB` for built-in
- * combination, with EXP_GAIN=12dB default, gives GAIN ≤ 17.1dB =
- * register 57. Use 80 here as the absolute register cap (the IPA owns
- * the per-mode tuning of the actual usable range above 57 if it cares).
- */
+/* Clear HDR AppNote section 5: combined HG gain is 9.6 to 29.1 dB. */
 #define IMX585_ANA_GAIN_MAX_HDR         80
+#define IMX585_COMBINED_GAIN_MIN        32  /* in 0.3 dB steps */
+#define IMX585_COMBINED_GAIN_MAX        97
 #define IMX585_ANA_GAIN_STEP            1
 #define IMX585_ANA_GAIN_DEFAULT         0
 
@@ -328,6 +323,7 @@ static const struct imx585_inck_cfg imx585_inck_table[] = {
 	{ 24000000, 0x04 },
 };
 
+static const u8 hdr_gain_adder_steps[] = { 0, 20, 40, 60, 80, 97 };
 static const char * const hdr_gain_adder_menu[] = {
 	"+0dB", "+6dB", "+12dB", "+18dB", "+24dB", "+29.1dB",
 };
@@ -876,7 +872,7 @@ struct imx585 {
 	u8   sync_mode;
 
 	u16  hmax;
-	bool updating_exposure_range;
+	struct v4l2_ctrl *programmed_range;
 
 	bool streaming;
 	bool common_regs_written;
@@ -1155,20 +1151,27 @@ static void imx585_reset_colorspace(struct v4l2_mbus_framefmt *fmt)
 	fmt->xfer_func = V4L2_MAP_XFER_FUNC_DEFAULT(fmt->colorspace);
 }
 
-/* Update analogue gain limits based on mode/HDR/HCG */
+static void imx585_gain_limits(const struct imx585 *imx585, u32 adder,
+			       s32 *low, s32 *high)
+{
+	if (imx585->clear_hdr) {
+		s32 steps = hdr_gain_adder_steps[adder];
+
+		*low = max(0, IMX585_COMBINED_GAIN_MIN - steps);
+		*high = min(IMX585_ANA_GAIN_MAX_HDR, IMX585_COMBINED_GAIN_MAX - steps);
+	} else {
+		*low = imx585->hcg ? IMX585_ANA_GAIN_MIN_HCG : IMX585_ANA_GAIN_MIN_NORMAL;
+		*high = IMX585_ANA_GAIN_MAX_NORMAL;
+	}
+}
+
 static void imx585_update_gain_limits(struct imx585 *imx585)
 {
-	const bool hcg_on = imx585->hcg;
-	const bool clear_hdr = imx585->clear_hdr;
-	const u32 min = hcg_on ? IMX585_ANA_GAIN_MIN_HCG : IMX585_ANA_GAIN_MIN_NORMAL;
-	const u32 max = clear_hdr ? IMX585_ANA_GAIN_MAX_HDR : IMX585_ANA_GAIN_MAX_NORMAL;
-	u32 cur = imx585->gain->val;
+	s32 low, high;
 
-	__v4l2_ctrl_modify_range(imx585->gain, min, max, IMX585_ANA_GAIN_STEP,
-				 clamp(cur, min, max));
-
-	if (cur < min || cur > max)
-		__v4l2_ctrl_s_ctrl(imx585->gain, clamp(cur, min, max));
+	imx585_gain_limits(imx585, imx585->hdr_gain_ctrl->cur.val, &low, &high);
+	__v4l2_ctrl_modify_range(imx585->gain, low, high, IMX585_ANA_GAIN_STEP,
+				 clamp(imx585->gain->cur.val, low, high));
 }
 
 /* Mode descriptors are shared; link speed, lane count and WDR are per sensor. */
@@ -1260,6 +1263,46 @@ static int imx585_write_held(struct imx585 *imx585,
 	return ret;
 }
 
+/* A range change can re-enter s_ctrl to clip the old cached value. */
+static int imx585_publish_range(struct imx585 *imx585, struct v4l2_ctrl *ctrl,
+				s32 low, s32 high, u32 step, s32 value)
+{
+	int ret;
+
+	imx585->programmed_range = ctrl;
+	ret = __v4l2_ctrl_modify_range(ctrl, low, high, step, value);
+	imx585->programmed_range = NULL;
+	return ret;
+}
+
+static int imx585_set_hdr_gain_adder(struct imx585 *imx585, u32 adder)
+{
+	s32 low, high, gain;
+
+	if (!imx585->clear_hdr)
+		return 0;
+
+	imx585_gain_limits(imx585, adder, &low, &high);
+	gain = clamp(imx585->gain->cur.val, low, high);
+	if (pm_runtime_get_if_active(imx585->clientdev)) {
+		const struct cci_reg_sequence regs[] = {
+			{ IMX585_REG_EXP_GAIN, adder },
+			{ IMX585_REG_ANALOG_GAIN, gain },
+		};
+		const struct cci_reg_sequence previous[] = {
+			{ IMX585_REG_EXP_GAIN, imx585->hdr_gain_ctrl->cur.val },
+			{ IMX585_REG_ANALOG_GAIN, imx585->gain->cur.val },
+		};
+		int ret = imx585_write_held(imx585, regs, previous, ARRAY_SIZE(regs));
+
+		pm_runtime_put(imx585->clientdev);
+		if (ret)
+			return ret;
+	}
+	return imx585_publish_range(imx585, imx585->gain, low, high,
+				    IMX585_ANA_GAIN_STEP, gain);
+}
+
 static int imx585_set_frame_length(struct imx585 *imx585,
 				   const struct imx585_mode *mode, u32 vmax)
 {
@@ -1284,12 +1327,8 @@ static int imx585_set_frame_length(struct imx585 *imx585,
 			return ret;
 	}
 
-	/* modify_range can call s_ctrl when shrinking the cached exposure. */
-	imx585->updating_exposure_range = true;
-	ret = __v4l2_ctrl_modify_range(exp, IMX585_EXPOSURE_MIN, max_exp,
-				       IMX585_EXPOSURE_STEP, exposure);
-	imx585->updating_exposure_range = false;
-	return ret;
+	return imx585_publish_range(imx585, exp, IMX585_EXPOSURE_MIN, max_exp,
+				    IMX585_EXPOSURE_STEP, exposure);
 }
 
 static int imx585_set_ctrl(struct v4l2_ctrl *ctrl)
@@ -1300,6 +1339,9 @@ static int imx585_set_ctrl(struct v4l2_ctrl *ctrl)
 	struct v4l2_mbus_framefmt *fmt;
 	u32 fmt_code;
 	int ret = 0;
+
+	if (ctrl == imx585->programmed_range)
+		return 0;
 
 	state = v4l2_subdev_get_locked_active_state(&imx585->sd);
 	mode = imx585_state_get_mode(imx585, state, &fmt_code);
@@ -1325,10 +1367,8 @@ static int imx585_set_ctrl(struct v4l2_ctrl *ctrl)
 	}
 	case V4L2_CID_VBLANK:
 		return imx585_set_frame_length(imx585, mode, mode->height + ctrl->val);
-	case V4L2_CID_EXPOSURE:
-		if (imx585->updating_exposure_range)
-			return 0;
-		break;
+	case V4L2_CID_IMX585_HDR_GAIN:
+		return imx585_set_hdr_gain_adder(imx585, ctrl->val);
 	case V4L2_CID_WIDE_DYNAMIC_RANGE:
 		if (imx585->clear_hdr != ctrl->val) {
 			imx585->clear_hdr = ctrl->val;
@@ -1466,12 +1506,6 @@ static int imx585_set_ctrl(struct v4l2_ctrl *ctrl)
 			dev_err_ratelimited(imx585->clientdev,
 					    "HDR grad high write failed (%d)\n", ret);
 		break;
-	case V4L2_CID_IMX585_HDR_GAIN:
-		ret = cci_write(imx585->regmap, IMX585_REG_EXP_GAIN, ctrl->val, NULL);
-		if (ret)
-			dev_err_ratelimited(imx585->clientdev,
-					    "HDR gain write failed (%d)\n", ret);
-		break;
 	case V4L2_CID_TEST_PATTERN:
 		ret = imx585_update_test_pattern(imx585, ctrl->val);
 		break;
@@ -1595,7 +1629,7 @@ static const struct v4l2_ctrl_config imx585_cfg_hdr_gain = {
 	.name  = "HDR Gain Adder (dB)",
 	.type  = V4L2_CTRL_TYPE_MENU,
 	.min   = 0,
-	.max   = ARRAY_SIZE(hdr_gain_adder_menu) - 1,
+	.max   = ARRAY_SIZE(hdr_gain_adder_steps) - 1,
 	.def   = 2,
 	.qmenu = hdr_gain_adder_menu,
 };
