@@ -393,7 +393,6 @@ static const struct cci_reg_sequence common_regs[] = {
 	{ CCI_REG8(0x3074), 0x64 },
 	{ CCI_REG8(0x30d5), 0x04 }, /* DIG_CLP_VSTART */
 	{ CCI_REG8(0x3030), 0x00 }, /* FDG_SEL0 LCG (HCG=0x01) */
-	{ CCI_REG8(0x30a6), 0x00 }, /* XVS_DRV [1:0] Hi-Z */
 	{ CCI_REG8(0x3081), 0x00 }, /* EXP_GAIN reset */
 	{ CCI_REG8(0x303a), 0x03 }, /* Disable embedded data */
 
@@ -1929,26 +1928,26 @@ static int imx585_enable_streams(struct v4l2_subdev *sd,
 	if (ret)
 		goto err_rpm_put;
 
-	/* Sync configuration */
+	/* XXS_OUTSEL bits 7 and 5 must stay set in every sync mode. */
 	if (imx585->sync_mode == SYNC_INT_FOLLOWER) {
 		dev_info(imx585->clientdev, "Internal sync follower: XVS input\n");
 		ret = cci_write(imx585->regmap, IMX585_REG_EXTMODE, 0x01, NULL);
 		if (!ret)
 			ret = cci_write(imx585->regmap, IMX585_REG_XXS_DRV, 0x03, NULL); /* XHS out, XVS in */
 		if (!ret)
-			ret = cci_write(imx585->regmap, IMX585_REG_XXS_OUTSEL, 0x08, NULL); /* disable XVS OUT */
+			ret = cci_write(imx585->regmap, IMX585_REG_XXS_OUTSEL, 0xa8, NULL); /* disable XVS OUT */
 	} else if (imx585->sync_mode == SYNC_INT_LEADER) {
 		dev_info(imx585->clientdev, "Internal sync leader: XVS/XHS output\n");
 		ret = cci_write(imx585->regmap, IMX585_REG_EXTMODE, 0x00, NULL);
 		if (!ret)
 			ret = cci_write(imx585->regmap, IMX585_REG_XXS_DRV, 0x00, NULL); /* XHS/XVS out */
 		if (!ret)
-			ret = cci_write(imx585->regmap, IMX585_REG_XXS_OUTSEL, 0x0A, NULL);
+			ret = cci_write(imx585->regmap, IMX585_REG_XXS_OUTSEL, 0xaa, NULL);
 	} else {
 		dev_info(imx585->clientdev, "Follower: XVS/XHS input\n");
 		ret = cci_write(imx585->regmap, IMX585_REG_XXS_DRV, 0x0F, NULL); /* inputs */
 		if (!ret)
-			ret = cci_write(imx585->regmap, IMX585_REG_XXS_OUTSEL, 0x00, NULL);
+			ret = cci_write(imx585->regmap, IMX585_REG_XXS_OUTSEL, 0xa0, NULL);
 	}
 	if (ret)
 		goto err_rpm_put;
