@@ -874,8 +874,7 @@ struct imx585 {
 	u16  hmax;
 	struct v4l2_ctrl *programmed_range;
 
-	bool streaming;
-	bool common_regs_written;
+	bool controls_live; /* stream setup or streaming, with the runtime PM reference held */
 };
 
 /* Helpers */
@@ -1284,7 +1283,7 @@ static int imx585_set_hdr_gain_adder(struct imx585 *imx585, u32 adder)
 
 	imx585_gain_limits(imx585, adder, &low, &high);
 	gain = clamp(imx585->gain->cur.val, low, high);
-	if (pm_runtime_get_if_active(imx585->clientdev)) {
+	if (imx585->controls_live) {
 		const struct cci_reg_sequence regs[] = {
 			{ IMX585_REG_EXP_GAIN, adder },
 			{ IMX585_REG_ANALOG_GAIN, gain },
@@ -1295,7 +1294,6 @@ static int imx585_set_hdr_gain_adder(struct imx585 *imx585, u32 adder)
 		};
 		int ret = imx585_write_held(imx585, regs, previous, ARRAY_SIZE(regs));
 
-		pm_runtime_put(imx585->clientdev);
 		if (ret)
 			return ret;
 	}
@@ -1320,9 +1318,8 @@ static int imx585_set_frame_length(struct imx585 *imx585,
 	};
 	int ret;
 
-	if (pm_runtime_get_if_active(imx585->clientdev)) {
+	if (imx585->controls_live) {
 		ret = imx585_write_held(imx585, regs, previous, ARRAY_SIZE(regs));
-		pm_runtime_put(imx585->clientdev);
 		if (ret)
 			return ret;
 	}
@@ -1353,11 +1350,10 @@ static int imx585_set_ctrl(struct v4l2_ctrl *ctrl)
 		unsigned int h = horizontal ? ctrl->val : imx585->hflip->cur.val;
 		unsigned int v = horizontal ? imx585->vflip->cur.val : ctrl->val;
 
-		if (pm_runtime_get_if_active(imx585->clientdev)) {
+		if (imx585->controls_live) {
 			ret = cci_write(imx585->regmap,
 					horizontal ? IMX585_FLIP_WINMODEH : IMX585_FLIP_WINMODEV,
 					ctrl->val, NULL);
-			pm_runtime_put(imx585->clientdev);
 			if (ret)
 				return ret;
 		}
@@ -1415,8 +1411,8 @@ static int imx585_set_ctrl(struct v4l2_ctrl *ctrl)
 		break;
 	}
 
-	/* Apply control only when powered (runtime active). */
-	if (!pm_runtime_get_if_active(imx585->clientdev))
+	/* Stream start replays values cached while the sensor is in standby. */
+	if (!imx585->controls_live)
 		return 0;
 
 	switch (ctrl->id) {
@@ -1515,7 +1511,6 @@ static int imx585_set_ctrl(struct v4l2_ctrl *ctrl)
 		break;
 	}
 
-	pm_runtime_put(imx585->clientdev);
 	return ret;
 }
 
@@ -1958,6 +1953,8 @@ static int imx585_set_pad_format(struct v4l2_subdev *sd,
 
 	if (fmt->pad)
 		return -EINVAL;
+	if (fmt->which == V4L2_SUBDEV_FORMAT_ACTIVE && v4l2_subdev_is_streaming(sd))
+		return -EBUSY;
 
 	fmt->format.code = imx585_get_format_code(imx585, fmt->format.code);
 	mode = imx585_find_mode(imx585, fmt->format.code,
@@ -2074,8 +2071,6 @@ static int imx585_enable_streams(struct v4l2_subdev *sd,
 	if (ret)
 		goto err_rpm_put;
 
-	imx585->common_regs_written = true;
-
 	/* Program linear defaults before the ADC-specific mode overrides. */
 	if (!imx585->clear_hdr) {
 		ret = cci_multi_reg_write(imx585->regmap, common_normal_mode,
@@ -2144,7 +2139,8 @@ static int imx585_enable_streams(struct v4l2_subdev *sd,
 	__v4l2_ctrl_s_ctrl(imx585->hmax_ctrl, 0);
 	__v4l2_ctrl_s_ctrl(imx585->shr_ctrl, 0);
 
-	/* Apply user controls after writing the base tables */
+	/* Apply user controls only after the mode tables are complete. */
+	imx585->controls_live = true;
 	ret = __v4l2_ctrl_handler_setup(imx585->sd.ctrl_handler);
 	if (ret) {
 		dev_err(imx585->clientdev, "Control handler setup failed\n");
@@ -2177,6 +2173,7 @@ err_standby:
 	if (imx585_enter_standby(imx585))
 		dev_err(imx585->clientdev, "Failed to restore standby after stream start error\n");
 err_rpm_put:
+	imx585->controls_live = false;
 	pm_runtime_put_autosuspend(imx585->clientdev);
 	return ret;
 }
@@ -2200,6 +2197,7 @@ static int imx585_disable_streams(struct v4l2_subdev *sd,
 		return ret;
 	}
 
+	imx585->controls_live = false;
 	__v4l2_ctrl_grab(imx585->vflip, false);
 	__v4l2_ctrl_grab(imx585->hflip, false);
 	__v4l2_ctrl_grab(imx585->hdr_mode, false);
