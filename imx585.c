@@ -605,14 +605,18 @@ static const struct cci_reg_sequence mode_4k_regs_12bit[] = {
 	IMX585_WIN_CROP_REGS_12BIT,
 };
 
+/* Normal AD10 needs both settings even when the output is RAW12. */
+#define IMX585_NORMAL_AD10_REGS \
+	{ CCI_REG8(0x3022), 0x00 }, \
+	{ CCI_REG16_LE(0x3930), 0x0066 }, \
+	{ CCI_REG8(0x4231), 0x18 }
+
 /* All-pixel 4K, 10-bit */
 static const struct cci_reg_sequence mode_4k_regs_10bit[] = {
 	{ CCI_REG8(0x301b), 0x00 }, /* ADDMODE non-binning */
-	{ CCI_REG8(0x3022), 0x00 }, /* ADBIT 10-bit */
+	IMX585_NORMAL_AD10_REGS,
 	{ IMX585_REG_MDBIT, 0x00 }, /* MDBIT RAW10 */
 	{ CCI_REG8(0x30d5), 0x04 }, /* DIG_CLP_VSTART non-binning */
-	{ CCI_REG8(0x3930), 0x66 }, /* DUR[15:8] (10-bit) */
-	{ CCI_REG8(0x3931), 0x00 }, /* DUR[7:0]  (10-bit) */
 	IMX585_WIN_CROP_REGS_12BIT,
 };
 
@@ -1954,6 +1958,16 @@ static int imx585_enable_streams(struct v4l2_subdev *sd,
 
 	imx585->common_regs_written = true;
 
+	/* Program linear defaults before the ADC-specific mode overrides. */
+	if (!imx585->clear_hdr) {
+		ret = cci_multi_reg_write(imx585->regmap, common_normal_mode,
+					  ARRAY_SIZE(common_normal_mode), NULL);
+		if (ret) {
+			dev_err(imx585->clientdev, "Failed to set normal regs\n");
+			goto err_rpm_put;
+		}
+	}
+
 	/* Select mode */
 	mode = imx585_state_get_mode(imx585, state, &fmt_code);
 
@@ -2000,13 +2014,6 @@ static int imx585_enable_streams(struct v4l2_subdev *sd,
 		}
 		if (ret)
 			goto err_rpm_put;
-	} else {
-		ret = cci_multi_reg_write(imx585->regmap, common_normal_mode,
-					  ARRAY_SIZE(common_normal_mode), NULL);
-		if (ret) {
-			dev_err(imx585->clientdev, "Failed to set normal regs\n");
-			goto err_rpm_put;
-		}
 	}
 
 	/* Disable digital clamp */
