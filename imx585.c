@@ -2327,6 +2327,17 @@ static int imx585_init_state(struct v4l2_subdev *sd,
  * --------------------------------------------------------------------------
  */
 
+static int imx585_get_skip_frames(struct v4l2_subdev *sd, u32 *frames)
+{
+	/* SRM p. 7: eight initialization frames follow standby release. */
+	*frames = 8;
+	return 0;
+}
+
+static const struct v4l2_subdev_sensor_ops imx585_sensor_ops = {
+	.g_skip_frames = imx585_get_skip_frames,
+};
+
 static const struct v4l2_subdev_video_ops imx585_video_ops = {
 	.s_stream = v4l2_subdev_s_stream_helper,
 };
@@ -2346,6 +2357,7 @@ static const struct v4l2_subdev_internal_ops imx585_internal_ops = {
 };
 
 static const struct v4l2_subdev_ops imx585_subdev_ops = {
+	.sensor = &imx585_sensor_ops,
 	.video = &imx585_video_ops,
 	.pad   = &imx585_pad_ops,
 };
