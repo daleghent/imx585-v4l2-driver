@@ -110,7 +110,7 @@
 #define IMX585_REG_VMAX                 CCI_REG24_LE(0x3028)
 #define IMX585_VMAX_MAX                 0xfffff
 #define IMX585_VMAX_DEFAULT             2250
-/* Min HMAX (4-lane) for the Clear HDR dual HG+LG read; see imx585_update_hmax */
+/* Min HMAX (4-lane) for the Clear HDR dual HG+LG read; see imx585_min_hmax */
 #define IMX585_HMAX_MIN_CLEARHDR        550
 
 /* HMAX internal HBLANK */
@@ -371,8 +371,6 @@ struct imx585_mode {
 
 	u8  hmax_div;       /* per-mode scaling of min HMAX */
 	const u16 *hmax_table;
-	u16 min_hmax;       /* computed at runtime */
-	u32 min_vmax;       /* computed at runtime (fits 20-bit) */
 
 	struct v4l2_rect crop;
 
@@ -686,15 +684,13 @@ enum imx585_mode_id {
 	IMX585_MODE_4K_16BIT_HDR,
 };
 
-static struct imx585_mode supported_modes[] = {
+static const struct imx585_mode supported_modes[] = {
 	{
 		/* 1080p60 2x2 binning, 12-bit */
 		.width = IMX585_PIXEL_ARRAY_WIDTH / 2,   /* 1920 */
 		.height = IMX585_PIXEL_ARRAY_HEIGHT / 2, /* 1080 */
 		.hmax_div = 1,
 		.hmax_table = HMAX_table_4lane_4K_12bit,
-		.min_hmax = 366,            /* overwritten at runtime */
-		.min_vmax = IMX585_VMAX_DEFAULT,
 		.crop = {
 			.left = 0,
 			.top = 0,
@@ -712,8 +708,6 @@ static struct imx585_mode supported_modes[] = {
 		.height = IMX585_PIXEL_ARRAY_HEIGHT, /* 2160 */
 		.hmax_div = 1,
 		.hmax_table = HMAX_table_4lane_4K_12bit,
-		.min_hmax = 550,            /* overwritten at runtime */
-		.min_vmax = IMX585_VMAX_DEFAULT,
 		.crop = {
 			.left = 0,
 			.top = 0,
@@ -738,8 +732,6 @@ static struct imx585_mode supported_modes[] = {
 		.height = IMX585_PIXEL_ARRAY_HEIGHT + 2 * IMX585_PIXEL_ARRAY_TOP_4K,/* 2200 */
 		.hmax_div = 1,
 		.hmax_table = HMAX_table_4lane_4K_12bit,
-		.min_hmax = 550,
-		.min_vmax = IMX585_VMAX_DEFAULT,
 		.crop = {
 			.left = 0,
 			.top = 0,
@@ -753,15 +745,13 @@ static struct imx585_mode supported_modes[] = {
 	},
 };
 
-static struct imx585_mode supported_10bit_modes[] = {
+static const struct imx585_mode supported_10bit_modes[] = {
 	{
 		/* Cropped UHD RAW10 at 88 fps on the four-lane 2079 Mbps/lane link */
 		.width = IMX585_PIXEL_ARRAY_WIDTH,   /* 3840 */
 		.height = IMX585_PIXEL_ARRAY_HEIGHT, /* 2160 */
 		.hmax_div = 1,
 		.hmax_table = HMAX_table_4lane_4K_10bit,
-		.min_hmax = 366,            /* overwritten at runtime */
-		.min_vmax = IMX585_VMAX_DEFAULT,
 		.crop = {
 			.left = 0,
 			.top = 0,
@@ -1202,68 +1192,32 @@ static void imx585_update_gain_limits(struct imx585 *imx585)
 		__v4l2_ctrl_s_ctrl(imx585->gain, clamp(cur, min, max));
 }
 
-/* Recompute per-mode timing limits (HMAX/VMAX) from link/lanes/HDR */
-static void imx585_update_hmax(struct imx585 *imx585)
+/* Mode descriptors are shared; link speed, lane count and WDR are per sensor. */
+static u32 imx585_min_hmax(const struct imx585 *imx585,
+			   const struct imx585_mode *mode)
 {
-	const u32 lane_scale = (imx585->lane_count == 2) ? 2 : 1;
-	const u32 hdr_scale  = imx585->clear_hdr ? 2 : 1;
-	unsigned int i;
+	u32 hmax = mode->hmax_table[imx585->link_freq_idx] / mode->hmax_div;
 
-	dev_info(imx585->clientdev, "Update minimum HMAX: link_freq=%llu lane_scale=%u hdr_scale=%u\n",
-		 link_freqs[imx585->link_freq_idx], lane_scale, hdr_scale);
+	if (imx585->clear_hdr)
+		hmax = max_t(u32, hmax, IMX585_HMAX_MIN_CLEARHDR);
 
-	for (i = 0; i < ARRAY_SIZE(supported_modes); ++i) {
-		u32 h = supported_modes[i].hmax_table[imx585->link_freq_idx] *
-			lane_scale / supported_modes[i].hmax_div;
-		u32 v = IMX585_VMAX_DEFAULT * hdr_scale;
-
-		/*
-		 * Clear HDR always does the dual HG+LG read, so the line readout
-		 * has a higher minimum (~HMAX 550 at 4-lane) than single-read
-		 * SDR — independent of output depth (12-bit CCMP or 16-bit). The
-		 * 12-bit/link-bandwidth tables drop below that at >=2079 Mbps/lane
-		 * (HMAX 472), where the HDR frame loses ~94% of its rows. Floor it
-		 * so Clear HDR runs on the high-speed link without a slower
-		 * dedicated hdr-link-frequency.
-		 */
-		if (imx585->clear_hdr)
-			h = max_t(u32, h, IMX585_HMAX_MIN_CLEARHDR * lane_scale);
-
-		supported_modes[i].min_hmax = h;
-		supported_modes[i].min_vmax = v;
-
-		dev_info(imx585->clientdev, " mode %ux%u -> VMAX=%u HMAX=%u\n",
-			 supported_modes[i].width, supported_modes[i].height, v, h);
-	}
-
-	for (i = 0; i < ARRAY_SIZE(supported_10bit_modes); ++i) {
-		u32 h = supported_10bit_modes[i].hmax_table[imx585->link_freq_idx] *
-			lane_scale / supported_10bit_modes[i].hmax_div;
-		u32 v = IMX585_VMAX_DEFAULT * hdr_scale;
-
-		supported_10bit_modes[i].min_hmax = h;
-		supported_10bit_modes[i].min_vmax = v;
-
-		dev_info(imx585->clientdev, " mode %ux%u -> VMAX=%u HMAX=%u\n",
-			 supported_10bit_modes[i].width,
-			 supported_10bit_modes[i].height, v, h);
-	}
+	return imx585->lane_count == 2 ? 2 * hmax : hmax;
 }
 
 static void imx585_set_framing_limits(struct imx585 *imx585,
 				      const struct imx585_mode *mode)
 {
+	u32 min_hmax = imx585_min_hmax(imx585, mode);
+	u32 min_vmax = IMX585_VMAX_DEFAULT * (imx585->clear_hdr ? 2 : 1);
 	u64 pixel_rate;
 	u64 max_hblank;
 
-	imx585_update_hmax(imx585);
-
-	imx585->vmax = mode->min_vmax;
-	imx585->hmax = mode->min_hmax;
+	imx585->vmax = min_vmax;
+	imx585->hmax = min_hmax;
 
 	/* Pixel rate proxy: width * clock / min_hmax */
 	pixel_rate = (u64)mode->width * IMX585_PIXEL_RATE;
-	do_div(pixel_rate, mode->min_hmax);
+	do_div(pixel_rate, min_hmax);
 	__v4l2_ctrl_modify_range(imx585->pixel_rate, pixel_rate, pixel_rate, 1,
 				 pixel_rate);
 
@@ -1275,10 +1229,10 @@ static void imx585_set_framing_limits(struct imx585 *imx585,
 	__v4l2_ctrl_s_ctrl(imx585->hblank, 0);
 
 	__v4l2_ctrl_modify_range(imx585->vblank,
-				 mode->min_vmax - mode->height,
+				 min_vmax - mode->height,
 				 IMX585_VMAX_MAX - mode->height,
-				 1, mode->min_vmax - mode->height);
-	__v4l2_ctrl_s_ctrl(imx585->vblank, mode->min_vmax - mode->height);
+				 1, min_vmax - mode->height);
+	__v4l2_ctrl_s_ctrl(imx585->vblank, min_vmax - mode->height);
 
 	__v4l2_ctrl_modify_range(imx585->exposure, IMX585_EXPOSURE_MIN,
 				 imx585->vmax - IMX585_SHR_MIN_HDR, 1,
@@ -1407,17 +1361,18 @@ static int imx585_set_ctrl(struct v4l2_ctrl *ctrl)
 	case V4L2_CID_HBLANK: {
 		u32 width   = mode->width;
 		u32 hblank  = (u32)ctrl->val;
+		u32 min_hmax = imx585_min_hmax(imx585, mode);
 		u64 num;
 		u32 hmax_new;
 
-		num = (u64)mode->min_hmax * (width + hblank);
+		num = (u64)min_hmax * (width + hblank);
 		hmax_new = div_u64(num, width);
 
 		imx585->hmax = hmax_new;
 
 		dev_info(imx585->clientdev,
 			 "HBLANK=%u -> HMAX=%u (min_hmax=%u, width=%u)\n",
-			 hblank, imx585->hmax, mode->min_hmax, width);
+			 hblank, imx585->hmax, min_hmax, width);
 
 		ret = cci_write(imx585->regmap, IMX585_REG_HMAX, imx585->hmax, NULL);
 		if (ret)
@@ -1858,10 +1813,9 @@ static int imx585_set_pad_format(struct v4l2_subdev *sd,
 
 	format = v4l2_subdev_state_get_format(sd_state, fmt->pad);
 
+	*format = fmt->format;
 	if (fmt->which == V4L2_SUBDEV_FORMAT_ACTIVE)
 		imx585_set_framing_limits(imx585, mode);
-
-	*format = fmt->format;
 
 	/*
 	 * Sync the per-mode crop into the subdev state so libcamera reads
@@ -2316,6 +2270,7 @@ static int imx585_probe(struct i2c_client *client)
 	struct device *dev = &client->dev;
 	struct imx585 *imx585;
 	const char *sync_mode;
+	struct v4l2_subdev_state *state;
 	int ret, i;
 
 	imx585 = devm_kzalloc(dev, sizeof(*imx585), GFP_KERNEL);
@@ -2411,6 +2366,11 @@ static int imx585_probe(struct i2c_client *client)
 		dev_err_probe(dev, ret, "subdev init\n");
 		goto err_entity;
 	}
+
+	/* Publish valid limits for the initial ACTIVE format before registration. */
+	state = v4l2_subdev_lock_and_get_active_state(&imx585->sd);
+	imx585_set_framing_limits(imx585, &supported_modes[IMX585_MODE_1080P_12BIT]);
+	v4l2_subdev_unlock_state(state);
 
 	ret = v4l2_async_register_subdev_sensor(&imx585->sd);
 	if (ret) {
