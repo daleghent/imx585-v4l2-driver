@@ -1991,6 +1991,17 @@ static int imx585_set_pad_format(struct v4l2_subdev *sd,
  * --------------------------------------------------------------------------
  */
 
+static int imx585_enter_standby(struct imx585 *imx585)
+{
+	int ret, master_ret = 0;
+
+	ret = cci_write(imx585->regmap, IMX585_REG_MODE_SELECT, IMX585_MODE_STANDBY, NULL);
+	if (imx585->sync_mode != SYNC_EXTERNAL)
+		master_ret = cci_write(imx585->regmap, IMX585_REG_XMSTA, 1, NULL);
+
+	return ret ? ret : master_ret;
+}
+
 static int imx585_enable_streams(struct v4l2_subdev *sd,
 				 struct v4l2_subdev_state *state, u32 pad,
 				 u64 streams_mask)
@@ -2140,19 +2151,20 @@ static int imx585_enable_streams(struct v4l2_subdev *sd,
 		goto err_rpm_put;
 	}
 
-	if (imx585->sync_mode != SYNC_EXTERNAL) {
-		ret = cci_write(imx585->regmap, IMX585_REG_XMSTA, 0x00, NULL);
-		if (ret)
-			goto err_rpm_put;
-	}
-
 	ret = cci_write(imx585->regmap, IMX585_REG_MODE_SELECT, IMX585_MODE_STREAMING, NULL);
 	if (ret)
-		goto err_rpm_put;
+		goto err_standby;
 
-	dev_info(imx585->clientdev, "Streaming started\n");
+	/* Datasheet p. 45: start master timing after regulator stabilization. */
 	usleep_range(IMX585_STREAM_DELAY_US,
 		     IMX585_STREAM_DELAY_US + IMX585_STREAM_DELAY_RANGE_US);
+	if (imx585->sync_mode != SYNC_EXTERNAL) {
+		ret = cci_write(imx585->regmap, IMX585_REG_XMSTA, 0, NULL);
+		if (ret)
+			goto err_standby;
+	}
+
+	dev_info(imx585->clientdev, "Streaming started\n");
 
 	/* vflip, hflip and HDR cannot change during streaming */
 	__v4l2_ctrl_grab(imx585->vflip, true);
@@ -2161,6 +2173,9 @@ static int imx585_enable_streams(struct v4l2_subdev *sd,
 
 	return 0;
 
+err_standby:
+	if (imx585_enter_standby(imx585))
+		dev_err(imx585->clientdev, "Failed to restore standby after stream start error\n");
 err_rpm_put:
 	pm_runtime_put_autosuspend(imx585->clientdev);
 	return ret;
@@ -2179,9 +2194,11 @@ static int imx585_disable_streams(struct v4l2_subdev *sd,
 	if (sd->enabled_pads & ~BIT_ULL(pad))
 		return 0;
 
-	ret = cci_write(imx585->regmap, IMX585_REG_MODE_SELECT, IMX585_MODE_STANDBY, NULL);
-	if (ret)
-		dev_err(imx585->clientdev, "Failed to stop streaming\n");
+	ret = imx585_enter_standby(imx585);
+	if (ret) {
+		dev_err(imx585->clientdev, "Failed to stop streaming (%d)\n", ret);
+		return ret;
+	}
 
 	__v4l2_ctrl_grab(imx585->vflip, false);
 	__v4l2_ctrl_grab(imx585->hflip, false);
