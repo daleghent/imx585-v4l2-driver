@@ -108,7 +108,7 @@
 
 /* VMAX internal VBLANK */
 #define IMX585_REG_VMAX                 CCI_REG24_LE(0x3028)
-#define IMX585_VMAX_MAX                 0xfffff
+#define IMX585_VMAX_MAX                 0xffffe
 #define IMX585_VMAX_DEFAULT             2250
 /* Min HMAX (4-lane) for the Clear HDR dual HG+LG read; see imx585_min_hmax */
 #define IMX585_HMAX_MIN_CLEARHDR        550
@@ -132,9 +132,9 @@
 
 /* Exposure control (lines) */
 #define IMX585_EXPOSURE_MIN             2
-#define IMX585_EXPOSURE_STEP            1
+#define IMX585_EXPOSURE_STEP            2
 #define IMX585_EXPOSURE_DEFAULT         1000
-#define IMX585_EXPOSURE_MAX             49865
+#define IMX585_EXPOSURE_MAX             49864
 
 /* HDR threshold / blending / compression */
 #define IMX585_REG_EXP_TH_H             CCI_REG16_LE(0x36d0)
@@ -1204,6 +1204,11 @@ static u32 imx585_min_hmax(const struct imx585 *imx585,
 	return imx585->lane_count == 2 ? 2 * hmax : hmax;
 }
 
+static u32 imx585_min_shr(const struct imx585 *imx585)
+{
+	return imx585->clear_hdr ? IMX585_SHR_MIN_HDR : IMX585_SHR_MIN;
+}
+
 static void imx585_set_framing_limits(struct imx585 *imx585,
 				      const struct imx585_mode *mode)
 {
@@ -1231,11 +1236,11 @@ static void imx585_set_framing_limits(struct imx585 *imx585,
 	__v4l2_ctrl_modify_range(imx585->vblank,
 				 min_vmax - mode->height,
 				 IMX585_VMAX_MAX - mode->height,
-				 1, min_vmax - mode->height);
+				 2, min_vmax - mode->height);
 	__v4l2_ctrl_s_ctrl(imx585->vblank, min_vmax - mode->height);
 
 	__v4l2_ctrl_modify_range(imx585->exposure, IMX585_EXPOSURE_MIN,
-				 imx585->vmax - IMX585_SHR_MIN_HDR, 1,
+				 imx585->vmax - imx585_min_shr(imx585), IMX585_EXPOSURE_STEP,
 				 IMX585_EXPOSURE_DEFAULT);
 
 	dev_info(imx585->clientdev, "Framing: VMAX=%u HMAX=%u pixel_rate=%llu\n",
@@ -1312,7 +1317,7 @@ static int imx585_set_ctrl(struct v4l2_ctrl *ctrl)
 
 	switch (ctrl->id) {
 	case V4L2_CID_EXPOSURE: {
-		u32 shr = (imx585->vmax - ctrl->val) & ~1U; /* SHR always a multiple of 2 */
+		u32 shr = imx585->vmax - ctrl->val;
 
 		dev_dbg(imx585->clientdev, "EXPOSURE=%u -> SHR=%u (VMAX=%u HMAX=%u)\n",
 			ctrl->val, shr, imx585->vmax, imx585->hmax);
@@ -1341,14 +1346,15 @@ static int imx585_set_ctrl(struct v4l2_ctrl *ctrl)
 		break;
 	case V4L2_CID_VBLANK: {
 		u32 current_exposure = imx585->exposure->cur.val;
-		const u32 min_shr = imx585->clear_hdr ? IMX585_SHR_MIN_HDR : IMX585_SHR_MIN;
+		const u32 min_shr = imx585_min_shr(imx585);
 
-		imx585->vmax = (mode->height + ctrl->val) & ~1U;
+		imx585->vmax = mode->height + ctrl->val;
 
 		current_exposure = clamp_t(u32, current_exposure,
 					   IMX585_EXPOSURE_MIN, imx585->vmax - min_shr);
 		__v4l2_ctrl_modify_range(imx585->exposure,
-					 IMX585_EXPOSURE_MIN, imx585->vmax - min_shr, 1,
+					 IMX585_EXPOSURE_MIN, imx585->vmax - min_shr,
+					 IMX585_EXPOSURE_STEP,
 					 current_exposure);
 
 		dev_info(imx585->clientdev, "VBLANK=%u -> VMAX=%u\n", ctrl->val, imx585->vmax);
@@ -1643,7 +1649,7 @@ static int imx585_init_controls(struct imx585 *imx585)
 		imx585->link_freq->flags |= V4L2_CTRL_FLAG_READ_ONLY;
 
 	imx585->vblank = v4l2_ctrl_new_std(hdl, &imx585_ctrl_ops,
-					   V4L2_CID_VBLANK, 0, 0xFFFFF, 1, 0);
+					   V4L2_CID_VBLANK, 0, IMX585_VMAX_MAX, 2, 0);
 	imx585->hblank = v4l2_ctrl_new_std(hdl, &imx585_ctrl_ops,
 					   V4L2_CID_HBLANK, 0, 0xFFFF, 1, 0);
 	imx585->blacklevel = v4l2_ctrl_new_std(hdl, &imx585_ctrl_ops,
