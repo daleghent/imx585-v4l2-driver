@@ -307,8 +307,8 @@ static const u16 HMAX_table_4lane_4K_10bit[] = {
 	/*
 	 * Sony's 2079 Mbps/lane RAW10 row lists HMAX=366, VMAX=2250 for the
 	 * 90.1 fps all-pixel mode. On the Pi 5/RP1 path, same-scene RAW10 vs
-	 * RAW12 QA showed deterministic artifacts at HMAX=366. HMAX=375 with
-	 * VMAX=2200 is the validated 90 fps clean timing on this DUT.
+	 * RAW12 QA showed deterministic artifacts at HMAX=366. Retain HMAX=375 and the standard VMAX=2250
+	 * (88 fps); a 2160-line crop needs at least 2230 lines per frame.
 	 */
 	[IMX585_LINK_FREQ_1039MHZ] = 375,
 	[IMX585_LINK_FREQ_1188MHZ] = 376,
@@ -756,7 +756,7 @@ static struct imx585_mode supported_modes[] = {
 
 static struct imx585_mode supported_10bit_modes[] = {
 	{
-		/* Cropped UHD RAW10 at 90 fps when the 2079 Mbps/lane link is selected */
+		/* Cropped UHD RAW10 at 88 fps on the four-lane 2079 Mbps/lane link */
 		.width = IMX585_PIXEL_ARRAY_WIDTH,   /* 3840 */
 		.height = IMX585_PIXEL_ARRAY_HEIGHT, /* 2160 */
 		.hmax_div = 1,
@@ -1241,9 +1241,6 @@ static void imx585_update_hmax(struct imx585 *imx585)
 		u32 h = supported_10bit_modes[i].hmax_table[imx585->link_freq_idx] *
 			lane_scale / supported_10bit_modes[i].hmax_div;
 		u32 v = IMX585_VMAX_DEFAULT * hdr_scale;
-
-		if (imx585->link_freq_idx == IMX585_LINK_FREQ_1039MHZ)
-			v = 2200 * hdr_scale;
 
 		supported_10bit_modes[i].min_hmax = h;
 		supported_10bit_modes[i].min_vmax = v;
