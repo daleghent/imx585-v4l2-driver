@@ -1438,13 +1438,18 @@ static int imx585_set_ctrl(struct v4l2_ctrl *ctrl)
 	case V4L2_CID_WIDE_DYNAMIC_RANGE: /* Handled above */
 		break;
 	case V4L2_CID_IMX585_HDR_DATASEL_TH: {
-		const u16 *th = (const u16 *)ctrl->p_new.p;
+		const u16 *th = ctrl->p_new.p_u16;
+		const u16 *old = ctrl->p_cur.p_u16;
+		const struct cci_reg_sequence regs[] = {
+			{ IMX585_REG_EXP_TH_H, th[0] },
+			{ IMX585_REG_EXP_TH_L, th[1] },
+		};
+		const struct cci_reg_sequence previous[] = {
+			{ IMX585_REG_EXP_TH_H, old[0] },
+			{ IMX585_REG_EXP_TH_L, old[1] },
+		};
 
-		ret = cci_write(imx585->regmap, IMX585_REG_EXP_TH_H, th[0], NULL);
-		if (!ret)
-			ret = cci_write(imx585->regmap, IMX585_REG_EXP_TH_L, th[1], NULL);
-		if (ret)
-			dev_err_ratelimited(imx585->clientdev, "HDR TH write failed (%d)\n", ret);
+		ret = imx585_write_held(imx585, regs, previous, ARRAY_SIZE(regs));
 		break;
 	}
 	case V4L2_CID_IMX585_HDR_DATASEL_BK:
@@ -1494,7 +1499,17 @@ static int imx585_set_ctrl(struct v4l2_ctrl *ctrl)
 	return ret;
 }
 
+static int imx585_try_ctrl(struct v4l2_ctrl *ctrl)
+{
+	if (ctrl->id == V4L2_CID_IMX585_HDR_DATASEL_TH &&
+	    ctrl->p_new.p_u16[0] < ctrl->p_new.p_u16[1])
+		return -ERANGE;
+
+	return 0;
+}
+
 static const struct v4l2_ctrl_ops imx585_ctrl_ops = {
+	.try_ctrl = imx585_try_ctrl,
 	.s_ctrl = imx585_set_ctrl,
 };
 
