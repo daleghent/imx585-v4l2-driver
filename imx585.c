@@ -1205,6 +1205,13 @@ static u32 imx585_min_hmax(const struct imx585 *imx585,
 	return imx585->lane_count == 2 ? 2 * hmax : hmax;
 }
 
+static u32 imx585_hmax_from_hblank(const struct imx585 *imx585,
+				   const struct imx585_mode *mode, u32 hblank)
+{
+	return div_u64((u64)imx585_min_hmax(imx585, mode) * (mode->width + hblank),
+		       mode->width);
+}
+
 static u32 imx585_min_shr(const struct imx585 *imx585)
 {
 	return imx585->clear_hdr ? IMX585_SHR_MIN_HDR : IMX585_SHR_MIN;
@@ -1226,9 +1233,9 @@ static void imx585_set_framing_limits(struct imx585 *imx585,
 	__v4l2_ctrl_modify_range(imx585->pixel_rate, pixel_rate, pixel_rate, 1,
 				 pixel_rate);
 
-	max_hblank = (u64)IMX585_HMAX_MAX * pixel_rate;
-	do_div(max_hblank, IMX585_PIXEL_RATE);
-	max_hblank -= mode->width;
+	/* Largest pixel period whose floor conversion still fits HMAX. */
+	max_hblank = DIV_ROUND_UP_ULL((IMX585_HMAX_MAX + 1ULL) * mode->width,
+				      min_hmax) - 1 - mode->width;
 
 	__v4l2_ctrl_modify_range(imx585->hblank, 0, max_hblank, 1, 0);
 	__v4l2_ctrl_s_ctrl(imx585->hblank, 0);
@@ -1407,21 +1414,7 @@ static int imx585_set_ctrl(struct v4l2_ctrl *ctrl)
 			dev_err_ratelimited(imx585->clientdev, "Gain write failed (%d)\n", ret);
 		break;
 	case V4L2_CID_HBLANK: {
-		u32 width   = mode->width;
-		u32 hblank  = (u32)ctrl->val;
-		u32 min_hmax = imx585_min_hmax(imx585, mode);
-		u64 num;
-		u32 hmax_new;
-
-		num = (u64)min_hmax * (width + hblank);
-		hmax_new = div_u64(num, width);
-
-		imx585->hmax = hmax_new;
-
-		dev_info(imx585->clientdev,
-			 "HBLANK=%u -> HMAX=%u (min_hmax=%u, width=%u)\n",
-			 hblank, imx585->hmax, min_hmax, width);
-
+		imx585->hmax = imx585_hmax_from_hblank(imx585, mode, ctrl->val);
 		ret = cci_write(imx585->regmap, IMX585_REG_HMAX, imx585->hmax, NULL);
 		if (ret)
 			dev_err_ratelimited(imx585->clientdev, "HMAX write failed (%d)\n", ret);
@@ -1441,30 +1434,6 @@ static int imx585_set_ctrl(struct v4l2_ctrl *ctrl)
 		ret = cci_write(imx585->regmap, IMX585_REG_BLKLEVEL, ctrl->val, NULL);
 		if (ret)
 			dev_err_ratelimited(imx585->clientdev, "BLKLEVEL write failed (%d)\n", ret);
-		break;
-	case V4L2_CID_IMX585_SHR:
-		dev_info(imx585->clientdev, "SHR=%u\n", ctrl->val);
-		if (ctrl->val == 0)
-            break; 
-		ret = cci_write(imx585->regmap, IMX585_REG_SHR, ctrl->val, NULL);
-		if (ret)
-			dev_err_ratelimited(imx585->clientdev, "SHR write failed (%d)\n", ret);
-		break;
-	case V4L2_CID_IMX585_VMAX:
-		dev_info(imx585->clientdev, "VMAX=%u\n", ctrl->val);
-		if (ctrl->val == 0)
-            break; 
-		ret = cci_write(imx585->regmap, IMX585_REG_VMAX, ctrl->val, NULL);
-		if (ret)
-			dev_err_ratelimited(imx585->clientdev, "VMAX write failed (%d)\n", ret);
-		break;
-	case V4L2_CID_IMX585_HMAX:
-		dev_info(imx585->clientdev, "HMAX=%u\n", ctrl->val);
-		if (ctrl->val == 0)
-            break; 
-		ret = cci_write(imx585->regmap, IMX585_REG_HMAX, ctrl->val, NULL);
-		if (ret)
-			dev_err_ratelimited(imx585->clientdev, "HMAX write failed (%d)\n", ret);
 		break;
 	case V4L2_CID_WIDE_DYNAMIC_RANGE: /* Handled above */
 		break;
@@ -1641,8 +1610,96 @@ static const struct v4l2_ctrl_config imx585_cfg_hcg = {
 	.def  = 0,
 };
 
+/* Translate legacy register controls into the timing controls libcamera uses. */
+static int imx585_raw_timing(struct v4l2_ctrl *ctrl, bool apply)
+{
+	struct imx585 *imx585 = container_of(ctrl->handler, struct imx585, ctrl_handler);
+	struct v4l2_subdev_state *state = v4l2_subdev_get_locked_active_state(&imx585->sd);
+	const struct imx585_mode *mode;
+	struct v4l2_ctrl *target;
+	u32 code, min_hmax, vmax;
+	s32 value;
+
+	if (!ctrl->val)
+		return 0;
+
+	mode = imx585_state_get_mode(imx585, state, &code);
+	switch (ctrl->id) {
+	case V4L2_CID_IMX585_VMAX:
+		target = imx585->vblank;
+		value = ctrl->val - (s32)mode->height;
+		break;
+	case V4L2_CID_IMX585_SHR:
+		vmax = mode->height + imx585->vblank->cur.val;
+		target = imx585->exposure;
+		value = (s32)vmax - ctrl->val;
+		break;
+	case V4L2_CID_IMX585_HMAX:
+		min_hmax = imx585_min_hmax(imx585, mode);
+		if (ctrl->val < min_hmax)
+			return -ERANGE;
+		target = imx585->hblank;
+		value = DIV_ROUND_UP_ULL((u64)ctrl->val * mode->width, min_hmax) -
+			mode->width;
+		if (imx585_hmax_from_hblank(imx585, mode, value) != ctrl->val)
+			return -ERANGE;
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	if (value < target->minimum || value > target->maximum ||
+	    (value - (s32)target->minimum) % (u32)target->step)
+		return -ERANGE;
+
+	return apply ? __v4l2_ctrl_s_ctrl(target, value) : 0;
+}
+
+static int imx585_try_raw_timing(struct v4l2_ctrl *ctrl)
+{
+	return imx585_raw_timing(ctrl, false);
+}
+
+static int imx585_set_raw_timing(struct v4l2_ctrl *ctrl)
+{
+	return imx585_raw_timing(ctrl, true);
+}
+
+static int imx585_get_raw_timing(struct v4l2_ctrl *ctrl)
+{
+	struct imx585 *imx585 = container_of(ctrl->handler, struct imx585, ctrl_handler);
+	struct v4l2_subdev_state *state = v4l2_subdev_get_locked_active_state(&imx585->sd);
+	const struct imx585_mode *mode;
+	u32 code, vmax;
+
+	mode = imx585_state_get_mode(imx585, state, &code);
+	vmax = mode->height + imx585->vblank->cur.val;
+	switch (ctrl->id) {
+	case V4L2_CID_IMX585_VMAX:
+		ctrl->val = vmax;
+		break;
+	case V4L2_CID_IMX585_SHR:
+		ctrl->val = vmax - imx585->exposure->cur.val;
+		break;
+	case V4L2_CID_IMX585_HMAX:
+		ctrl->val = imx585_hmax_from_hblank(imx585, mode, imx585->hblank->cur.val);
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+static const struct v4l2_ctrl_ops imx585_raw_timing_ops = {
+	.try_ctrl = imx585_try_raw_timing,
+	.s_ctrl = imx585_set_raw_timing,
+	.g_volatile_ctrl = imx585_get_raw_timing,
+};
+
 static const struct v4l2_ctrl_config imx585_cfg_hmax = {
-	.ops  = &imx585_ctrl_ops,
+	.ops  = &imx585_raw_timing_ops,
+	.flags = V4L2_CTRL_FLAG_VOLATILE | V4L2_CTRL_FLAG_EXECUTE_ON_WRITE,
 	.id   = V4L2_CID_IMX585_HMAX,
 	.name = "HMAX",
 	.type = V4L2_CTRL_TYPE_INTEGER,
@@ -1652,7 +1709,8 @@ static const struct v4l2_ctrl_config imx585_cfg_hmax = {
 };
 
 static const struct v4l2_ctrl_config imx585_cfg_vmax = {
-	.ops  = &imx585_ctrl_ops,
+	.ops  = &imx585_raw_timing_ops,
+	.flags = V4L2_CTRL_FLAG_VOLATILE | V4L2_CTRL_FLAG_EXECUTE_ON_WRITE,
 	.id   = V4L2_CID_IMX585_VMAX,
 	.name = "VMAX",
 	.type = V4L2_CTRL_TYPE_INTEGER,
@@ -1662,7 +1720,8 @@ static const struct v4l2_ctrl_config imx585_cfg_vmax = {
 };
 
 static const struct v4l2_ctrl_config imx585_cfg_shr = {
-	.ops  = &imx585_ctrl_ops,
+	.ops  = &imx585_raw_timing_ops,
+	.flags = V4L2_CTRL_FLAG_VOLATILE | V4L2_CTRL_FLAG_EXECUTE_ON_WRITE,
 	.id   = V4L2_CID_IMX585_SHR,
 	.name = "SHR",
 	.type = V4L2_CTRL_TYPE_INTEGER,
@@ -2019,7 +2078,7 @@ static int imx585_enable_streams(struct v4l2_subdev *sd,
 	if (ret)
 		goto err_rpm_put;
 
-	/* Reset manual HMAX/VMAX/SHR control value */
+	/* Clear legacy write commands before replaying the standard controls. */
 	__v4l2_ctrl_s_ctrl(imx585->vmax_ctrl, 0);
 	__v4l2_ctrl_s_ctrl(imx585->hmax_ctrl, 0);
 	__v4l2_ctrl_s_ctrl(imx585->shr_ctrl, 0);
