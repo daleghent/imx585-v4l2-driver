@@ -1052,10 +1052,8 @@ static bool imx585_code_in_table(const u32 *table, unsigned int num_entries,
 	return false;
 }
 
-static u32 imx585_get_format_code(struct imx585 *imx585, u32 code)
+static u32 imx585_oriented_code(struct imx585 *imx585, u32 code, unsigned int order)
 {
-	u32 mapped_code = 0;
-	unsigned int i;
 
 	if (imx585->mono) {
 		if (imx585->clear_hdr) {
@@ -1073,42 +1071,22 @@ static u32 imx585_get_format_code(struct imx585 *imx585, u32 code)
 		return MEDIA_BUS_FMT_Y12_1X12;
 	}
 
+	/* Each four-code group is ordered RGGB, GRBG, GBRG, BGGR. */
 	if (imx585->clear_hdr) {
-		for (i = 0; i < ARRAY_SIZE(codes_clearhdr); i++)
-			if (codes_clearhdr[i] == code &&
-			    (imx585_is_clearhdr_16bit_code(code) ||
-			     imx585->clearhdr_ccmp))
-				return codes_clearhdr[i];
-		return codes_clearhdr[0];
+		if (imx585->clearhdr_ccmp && imx585_is_clearhdr_12bit_code(code))
+			return codes_clearhdr[4 + order];
+		return codes_clearhdr[order];
 	}
+	if (imx585_code_in_table(&codes_normal[4], 4, code))
+		return codes_normal[4 + order];
+	return codes_normal[order];
+}
 
-	for (i = 0; i < ARRAY_SIZE(codes_normal); i++)
-		if (codes_normal[i] == code)
-			return codes_normal[i];
+static u32 imx585_get_format_code(struct imx585 *imx585, u32 code)
+{
+	unsigned int order = imx585->hflip->cur.val | (imx585->vflip->cur.val << 1);
 
-	switch (code) {
-	case MEDIA_BUS_FMT_SRGGB16_1X16:
-		mapped_code = MEDIA_BUS_FMT_SRGGB12_1X12;
-		break;
-	case MEDIA_BUS_FMT_SGRBG16_1X16:
-		mapped_code = MEDIA_BUS_FMT_SGRBG12_1X12;
-		break;
-	case MEDIA_BUS_FMT_SGBRG16_1X16:
-		mapped_code = MEDIA_BUS_FMT_SGBRG12_1X12;
-		break;
-	case MEDIA_BUS_FMT_SBGGR16_1X16:
-		mapped_code = MEDIA_BUS_FMT_SBGGR12_1X12;
-		break;
-	default:
-		break;
-	}
-
-	if (mapped_code &&
-	    imx585_code_in_table(codes_normal, ARRAY_SIZE(codes_normal),
-				 mapped_code))
-		return mapped_code;
-
-	return codes_normal[0];
+	return imx585_oriented_code(imx585, code, order);
 }
 
 static u32 imx585_default_format_code(struct imx585 *imx585)
@@ -1327,6 +1305,24 @@ static int imx585_set_ctrl(struct v4l2_ctrl *ctrl)
 	mode = imx585_state_get_mode(imx585, state, &fmt_code);
 
 	switch (ctrl->id) {
+	case V4L2_CID_HFLIP:
+	case V4L2_CID_VFLIP: {
+		bool horizontal = ctrl->id == V4L2_CID_HFLIP;
+		unsigned int h = horizontal ? ctrl->val : imx585->hflip->cur.val;
+		unsigned int v = horizontal ? imx585->vflip->cur.val : ctrl->val;
+
+		if (pm_runtime_get_if_active(imx585->clientdev)) {
+			ret = cci_write(imx585->regmap,
+					horizontal ? IMX585_FLIP_WINMODEH : IMX585_FLIP_WINMODEV,
+					ctrl->val, NULL);
+			pm_runtime_put(imx585->clientdev);
+			if (ret)
+				return ret;
+		}
+		fmt = v4l2_subdev_state_get_format(state, 0);
+		fmt->code = imx585_oriented_code(imx585, fmt->code, h | (v << 1));
+		return 0;
+	}
 	case V4L2_CID_VBLANK:
 		return imx585_set_frame_length(imx585, mode, mode->height + ctrl->val);
 	case V4L2_CID_EXPOSURE:
@@ -1420,16 +1416,6 @@ static int imx585_set_ctrl(struct v4l2_ctrl *ctrl)
 			dev_err_ratelimited(imx585->clientdev, "HMAX write failed (%d)\n", ret);
 		break;
 	}
-	case V4L2_CID_HFLIP:
-		ret = cci_write(imx585->regmap, IMX585_FLIP_WINMODEH, ctrl->val, NULL);
-		if (ret)
-			dev_err_ratelimited(imx585->clientdev, "HFLIP write failed (%d)\n", ret);
-		break;
-	case V4L2_CID_VFLIP:
-		ret = cci_write(imx585->regmap, IMX585_FLIP_WINMODEV, ctrl->val, NULL);
-		if (ret)
-			dev_err_ratelimited(imx585->clientdev, "VFLIP write failed (%d)\n", ret);
-		break;
 	case V4L2_CID_BRIGHTNESS:
 		ret = cci_write(imx585->regmap, IMX585_REG_BLKLEVEL, ctrl->val, NULL);
 		if (ret)
@@ -1827,6 +1813,10 @@ static int imx585_init_controls(struct imx585 *imx585)
 	memcpy(imx585->gdc_th_ctrl->p_cur.p, grad_thresh_def, sizeof(grad_thresh_def));
 	memcpy(imx585->gdc_th_ctrl->p_new.p, grad_thresh_def, sizeof(grad_thresh_def));
 
+	if (!imx585->mono) {
+		imx585->hflip->flags |= V4L2_CTRL_FLAG_MODIFY_LAYOUT;
+		imx585->vflip->flags |= V4L2_CTRL_FLAG_MODIFY_LAYOUT;
+	}
 	imx585->hdr_mode->flags |= V4L2_CTRL_FLAG_UPDATE | V4L2_CTRL_FLAG_MODIFY_LAYOUT;
 
 	imx585->sd.ctrl_handler = hdl;
@@ -1911,6 +1901,17 @@ static int imx585_enum_frame_size(struct v4l2_subdev *sd,
 	fse->max_height = fse->min_height;
 
 	return 0;
+}
+
+static int imx585_get_pad_format(struct v4l2_subdev *sd,
+				 struct v4l2_subdev_state *state,
+				 struct v4l2_subdev_format *fmt)
+{
+	int ret = v4l2_subdev_get_fmt(sd, state, fmt);
+
+	if (!ret)
+		fmt->format.code = imx585_get_format_code(to_imx585(sd), fmt->format.code);
+	return ret;
 }
 
 static int imx585_set_pad_format(struct v4l2_subdev *sd,
@@ -2281,7 +2282,7 @@ static const struct v4l2_subdev_video_ops imx585_video_ops = {
 
 static const struct v4l2_subdev_pad_ops imx585_pad_ops = {
 	.enum_mbus_code = imx585_enum_mbus_code,
-	.get_fmt        = v4l2_subdev_get_fmt,
+	.get_fmt        = imx585_get_pad_format,
 	.set_fmt        = imx585_set_pad_format,
 	.get_selection  = imx585_get_selection,
 	.enum_frame_size = imx585_enum_frame_size,
