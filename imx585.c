@@ -620,10 +620,10 @@ static const struct cci_reg_sequence mode_4k_regs_10bit[] = {
 	IMX585_WIN_CROP_REGS_12BIT,
 };
 
-/* 2x2 binned 1080p, 12-bit */
+/* 2x2 binned 1080p: 10-bit conversion, 12-bit CSI-2 output. */
 static const struct cci_reg_sequence mode_1080_regs_12bit[] = {
 	{ CCI_REG8(0x301b), 0x01 }, /* ADDMODE binning */
-	{ CCI_REG8(0x3022), 0x02 }, /* ADBIT 12-bit */
+	IMX585_NORMAL_AD10_REGS,
 	{ IMX585_REG_MDBIT, 0x01 }, /* MDBIT 12-bit */
 	{ CCI_REG8(0x30d5), 0x02 }, /* DIG_CLP_VSTART binning */
 	IMX585_WIN_CROP_REGS_12BIT,
