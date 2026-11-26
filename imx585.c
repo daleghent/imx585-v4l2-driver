@@ -49,6 +49,7 @@
 
 /* Standby or streaming mode */
 #define IMX585_REG_MODE_SELECT          CCI_REG8(0x3000)
+#define IMX585_REG_REGHOLD              CCI_REG8(0x3001)
 #define IMX585_MODE_STANDBY             0x01
 #define IMX585_MODE_STREAMING           0x00
 #define IMX585_STREAM_DELAY_US          25000
@@ -875,7 +876,7 @@ struct imx585 {
 	u8   sync_mode;
 
 	u16  hmax;
-	u32  vmax;
+	bool updating_exposure_range;
 
 	bool streaming;
 	bool common_regs_written;
@@ -1217,7 +1218,6 @@ static void imx585_set_framing_limits(struct imx585 *imx585,
 	u64 pixel_rate;
 	u64 max_hblank;
 
-	imx585->vmax = min_vmax;
 	imx585->hmax = min_hmax;
 
 	/* Pixel rate proxy: width * clock / min_hmax */
@@ -1240,17 +1240,72 @@ static void imx585_set_framing_limits(struct imx585 *imx585,
 	__v4l2_ctrl_s_ctrl(imx585->vblank, min_vmax - mode->height);
 
 	__v4l2_ctrl_modify_range(imx585->exposure, IMX585_EXPOSURE_MIN,
-				 imx585->vmax - imx585_min_shr(imx585), IMX585_EXPOSURE_STEP,
+				 min_vmax - imx585_min_shr(imx585), IMX585_EXPOSURE_STEP,
 				 IMX585_EXPOSURE_DEFAULT);
 
 	dev_info(imx585->clientdev, "Framing: VMAX=%u HMAX=%u pixel_rate=%llu\n",
-		 imx585->vmax, imx585->hmax, pixel_rate);
+		 min_vmax, imx585->hmax, pixel_rate);
 }
 
 /* --------------------------------------------------------------------------
  * Controls
  * --------------------------------------------------------------------------
  */
+
+/* Keep V-reflected registers on the same frame boundary (SRM p. 28). */
+static int imx585_write_held(struct imx585 *imx585,
+			     const struct cci_reg_sequence *regs,
+			     const struct cci_reg_sequence *previous, size_t count)
+{
+	int ret, recovery = 0;
+
+	ret = cci_write(imx585->regmap, IMX585_REG_REGHOLD, 1, NULL);
+	if (!ret)
+		ret = cci_multi_reg_write(imx585->regmap, regs, count, NULL);
+	if (!ret)
+		ret = cci_write(imx585->regmap, IMX585_REG_REGHOLD, 0, NULL);
+	if (!ret)
+		return 0;
+
+	/* A failed transfer can still have reached the sensor. */
+	cci_write(imx585->regmap, IMX585_REG_REGHOLD, 1, &recovery);
+	cci_multi_reg_write(imx585->regmap, previous, count, &recovery);
+	if (cci_write(imx585->regmap, IMX585_REG_REGHOLD, 0, NULL) || recovery)
+		dev_err_ratelimited(imx585->clientdev, "Failed to restore held registers\\n");
+	return ret;
+}
+
+static int imx585_set_frame_length(struct imx585 *imx585,
+				   const struct imx585_mode *mode, u32 vmax)
+{
+	struct v4l2_ctrl *exp = imx585->exposure;
+	u32 max_exp = vmax - imx585_min_shr(imx585);
+	u32 exposure = min_t(u32, exp->cur.val, max_exp);
+	u32 old_vmax = mode->height + imx585->vblank->cur.val;
+	const struct cci_reg_sequence regs[] = {
+		{ IMX585_REG_VMAX, vmax },
+		{ IMX585_REG_SHR, vmax - exposure },
+	};
+	const struct cci_reg_sequence previous[] = {
+		{ IMX585_REG_VMAX, old_vmax },
+		{ IMX585_REG_SHR, old_vmax - min_t(u32, exp->cur.val, old_vmax) },
+	};
+	int ret;
+
+	if (pm_runtime_get_if_active(imx585->clientdev)) {
+		ret = imx585_write_held(imx585, regs, previous, ARRAY_SIZE(regs));
+		pm_runtime_put(imx585->clientdev);
+		if (ret)
+			return ret;
+	}
+
+	/* modify_range can call s_ctrl when shrinking the cached exposure. */
+	imx585->updating_exposure_range = true;
+	ret = __v4l2_ctrl_modify_range(exp, IMX585_EXPOSURE_MIN, max_exp,
+				       IMX585_EXPOSURE_STEP, exposure);
+	imx585->updating_exposure_range = false;
+	return ret;
+}
 
 static int imx585_set_ctrl(struct v4l2_ctrl *ctrl)
 {
@@ -1265,6 +1320,12 @@ static int imx585_set_ctrl(struct v4l2_ctrl *ctrl)
 	mode = imx585_state_get_mode(imx585, state, &fmt_code);
 
 	switch (ctrl->id) {
+	case V4L2_CID_VBLANK:
+		return imx585_set_frame_length(imx585, mode, mode->height + ctrl->val);
+	case V4L2_CID_EXPOSURE:
+		if (imx585->updating_exposure_range)
+			return 0;
+		break;
 	case V4L2_CID_WIDE_DYNAMIC_RANGE:
 		if (imx585->clear_hdr != ctrl->val) {
 			imx585->clear_hdr = ctrl->val;
@@ -1317,10 +1378,11 @@ static int imx585_set_ctrl(struct v4l2_ctrl *ctrl)
 
 	switch (ctrl->id) {
 	case V4L2_CID_EXPOSURE: {
-		u32 shr = imx585->vmax - ctrl->val;
+		u32 vmax = mode->height + imx585->vblank->cur.val;
+		u32 shr = vmax - ctrl->val;
 
 		dev_dbg(imx585->clientdev, "EXPOSURE=%u -> SHR=%u (VMAX=%u HMAX=%u)\n",
-			ctrl->val, shr, imx585->vmax, imx585->hmax);
+			ctrl->val, shr, vmax, imx585->hmax);
 
 		ret = cci_write(imx585->regmap, IMX585_REG_SHR, shr, NULL);
 		if (ret)
@@ -1344,26 +1406,6 @@ static int imx585_set_ctrl(struct v4l2_ctrl *ctrl)
 		if (ret)
 			dev_err_ratelimited(imx585->clientdev, "Gain write failed (%d)\n", ret);
 		break;
-	case V4L2_CID_VBLANK: {
-		u32 current_exposure = imx585->exposure->cur.val;
-		const u32 min_shr = imx585_min_shr(imx585);
-
-		imx585->vmax = mode->height + ctrl->val;
-
-		current_exposure = clamp_t(u32, current_exposure,
-					   IMX585_EXPOSURE_MIN, imx585->vmax - min_shr);
-		__v4l2_ctrl_modify_range(imx585->exposure,
-					 IMX585_EXPOSURE_MIN, imx585->vmax - min_shr,
-					 IMX585_EXPOSURE_STEP,
-					 current_exposure);
-
-		dev_info(imx585->clientdev, "VBLANK=%u -> VMAX=%u\n", ctrl->val, imx585->vmax);
-
-		ret = cci_write(imx585->regmap, IMX585_REG_VMAX, imx585->vmax, NULL);
-		if (ret)
-			dev_err_ratelimited(imx585->clientdev, "VMAX write failed (%d)\n", ret);
-		break;
-	}
 	case V4L2_CID_HBLANK: {
 		u32 width   = mode->width;
 		u32 hblank  = (u32)ctrl->val;
