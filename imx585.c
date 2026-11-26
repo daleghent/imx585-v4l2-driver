@@ -1340,6 +1340,14 @@ static int imx585_set_ctrl(struct v4l2_ctrl *ctrl)
 	if (ctrl == imx585->programmed_range)
 		return 0;
 
+	/*
+	 * S_EXT_CTRLS can validate the entire batch before a preceding
+	 * VBLANK or HDR adder narrows the range of another control.
+	 */
+	if ((ctrl->id == V4L2_CID_EXPOSURE || ctrl->id == V4L2_CID_ANALOGUE_GAIN) &&
+	    (ctrl->val < ctrl->minimum || ctrl->val > ctrl->maximum))
+		return -ERANGE;
+
 	state = v4l2_subdev_get_locked_active_state(&imx585->sd);
 	mode = imx585_state_get_mode(imx585, state, &fmt_code);
 
