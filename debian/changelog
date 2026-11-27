@@ -1,3 +1,24 @@
+imx585-dkms (1.1.0-1) unstable; urgency=medium
+
+  * imx585: recheck dependent limits when applying batched controls
+  * Document IMX585 writes outside the standard register map
+  * imx585: keep timing writes tied to the programmed sensor mode
+  * imx585: advertise eight initialization frames after standby
+  * imx585: start master timing after standby stabilization
+  * imx585: enforce the combined Clear HDR gain limits
+  * imx585: report the Bayer order selected by sensor flips
+  * imx585: reject reversed Clear HDR selection thresholds
+  * imx585: route private timing writes through the V4L2 controls
+  * imx585: preserve integration when the frame length changes
+  * imx585: advertise the sensor's two-line timing resolution
+  * imx585: derive blanking limits from the active sensor instance
+  * imx585: preserve fixed sync selector bits and pin direction
+  * imx585: restore the RAW10 frame length at 2079 Mbit/s
+  * imx585: use ten-bit conversion for 1080p binning
+  * imx585: preserve ADC-specific timing at RAW10 stream start
+
+ -- Dale Ghent <daleg@elemental.org>  Thu, 26 Nov 2026 20:56:47 -0700
+
 imx585-dkms (1.0.0-1) unstable; urgency=medium
 
   * Initial release of IMX585 DKMS driver package
